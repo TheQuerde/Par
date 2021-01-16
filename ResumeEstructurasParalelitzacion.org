@@ -127,7 +127,7 @@ int var = 4;
 #+end_src
 **** Dependencias explicitas
 Podemos indicar a OMP que las tareas tienen ciertas dependencias una con las otras y que este se encarge de gestionar las ejecuciones de dichas tareas
-#+begin_src
+#+begin_src c
 #pragma omp task [depend (in : var_list)] [depend (out : var_list)] [depend (inout : var_list)]
 #+end_src
 Donde in van todas aquellas variables que la tarea dependerá, out serán aquellas de las que otras dependen y inout son los dos casos presentados en una unica clausula.
