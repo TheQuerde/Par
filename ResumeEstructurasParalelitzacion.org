@@ -305,7 +305,7 @@ int mat [N][N];
     int res = N%howMany;
     int startI = id*BS;
     int endI = startI+BS;
-    if (res != 0) {
+    if (res > id) {
         startI += id;
         endI += (id+1);
     }
