@@ -1,0 +1,405 @@
+#+TITLE: Resumen Estructuras Paralelitzacion
+
+* Descomposición por tareas (explicita)
+Una tarea es una región del codigo que va a ser ejecutada por una unica hebra de forma paralela.
+Para garantizar una ejecucion paralela:
+#+begin_src c
+
+#pragma omp task
+
+#+end_src
+** Variables dentro de una tarea
+Cualquier variable declarada dentro de la tarea va a tener una visiblidad local (solo la tarea la podrá ver). En algún caso nos interesara usar alguna variable externa. Estas podran clasificarse de dos formas.
+*** Visibilidad local
+Entendemos visiblidad local como toda variable externa que al usarse en la zona paralela va a verse como si fuera declarada dentro de nuestra tarea.
+Por lo tanto podra tener tantos valores como tareas haya en ejecucion.
+En este curso hemos visto 2 casos:
+**** Private
+Son todas aquellas variables que son declaras previamente (antes de la región paralela) pero no estan inicializadas.
+#+begin_src c
+int var; //declaramos una variable pero no la inicializamos
+#pragma omp task private(var)
+{
+    var = doSomething(); //el valor de var sera inicializado dentro de la region paralela
+}
+#+end_src
+**** First Private
+En este caso si la variable ya esta inicializada necesitaremos usar esta clausula.
+#+begin_src c
+int var = doSomething(); //declaramos una variable y la inicializamos
+#pragma omp task firstprivate(var)
+{
+    var = doSomethingWithParameter(var); //el valor de var ya esta inicializado i lo podemos usar.
+}
+#+end_src
+*** Visibilidad global
+Alguna vez nos interesara modificar valores externos a nuestra zona paralela. No obstante, debemos controlar como se realizan estas lecturas y escrituras para evitar problemas de coherencia (ya que son muchas hebas las que accederan a la misma variable sin nungun tipo de control). Otro factor a tener en cuenta son los overheats de sincronización.
+Algunas estrategias para evitar dichos problemas son:
+**** Operaciones atómicas
+Podemos pensar en que operaciones en concreto se hacen de forma atómica (solo una puede hacerla a una hebra a la vez).
+#+begin_src c
+int var = 4;
+#pragma omp task
+{
+    #pragma omp atomic
+    var += foo();
+}
+#+end_src
+**** Región crítica
+Una region critica va a ser ejecutada de forma atómica. Si nos pasamos con las operaciones de esta zona podemos tener problemas de serialización.
+#+begin_src c
+int var = 4;
+#pragma omp task
+{
+    #pragma omp critical
+    {
+        var += foo();
+        doSomething(); //esta región va a ejecutarse de forma atómica
+    }
+}
+#+end_src
+**** Reducción
+Algunas operaciones pueden tratarse de forma local y sincronizar los datos al final de completar dicha tarea.
+#+begin_src c
+int var = 4;
+#pragma omp task reduction(+:var)
+{
+        var += foo();
+}
+//en este caso aqui var valdra la suma de todas las var locales
+#+end_src
+Las operaciones permitidas son:
+#+begin_quote
++, -, *, &, |, ^, &&, ||
+#+end_quote
+**** Variables compartidas
+Esto no es una estrategia como tal pero hay algunos casos que nos interesa indicar de forma implicita que alguna variable pueda usarse en varias tareas a la vez (compartir dicha variable).
+#+begin_src c
+int var = 4;
+#pragma omp task shared(var)
+{
+        var += foo(); // en este caso todas las tareas van a poder acceder al mismo valor de la variable
+}
+#+end_src
+Hay que tener sumo cuidado con esto ya que podemos tener errores de condicion de carreras.
+**** Bloqueos de variables
+Podemos usar una estructura que nos ofrece OMP: omp_lock. Esta ofrece cambios atomicos perfectos para sincronizar hebra.
+#+begin_src c
+omp_lock_t hash lock[SIZE HASH];
+#pragma omp parallel
+#pragma omp single
+{
+for (i = 0; i < SIZE HASH; i++) omp init lock(&hash lock[i]);
+#pragma omp taskloop
+for (i = 0; i < SIZE_TABLE; i++) {
+    int index = hash_function (dataTable[i], SIZE_HASH);
+    omp_set_lock (&hash lock[index]);
+    insert element (element[i], index);
+    omp_unset_lock (&hash lock[index]);
+}
+for (i = 0; i < SIZE HASH; i++) omp_destroy_lock(&hash lock[i]); // Hay que destruir los locks ya que ocupan espacio de la aplicacion
+}
+#+end_src
+**** Esperas
+Podemos indicar en el codigo que queremos hacer una pausa hasta que los datos sean correctos.
+***** Taskwait
+A partir del taskwait deberemos esperar a que todas las tareas que he generado sean resueltas.
+#+begin_src c
+int var = 4;
+#pragma omp task
+{
+        var += foo();
+        #pragma omp task
+        ...
+}
+#pragma omp taskwait //el programa va a esperar a que todas las tareas que ha creado hayan terminado
+#+end_src
+***** Taskgroup
+Todo lo que este dentro de la región debera esperarse para ser resuelto
+#+begin_src c
+int var = 4;
+#pragma omp task taskgroup
+{
+        var += foo();
+        #pragma omp task
+        ...
+}
+#+end_src
+**** Dependencias explicitas
+Podemos indicar a OMP que las tareas tienen ciertas dependencias una con las otras y que este se encarge de gestionar las ejecuciones de dichas tareas
+#+begin_src
+#pragma omp task [depend (in : var_list)] [depend (out : var_list)] [depend (inout : var_list)]
+#+end_src
+Donde in van todas aquellas variables que la tarea dependerá, out serán aquellas de las que otras dependen y inout son los dos casos presentados en una unica clausula.
+** Tareas iterativas
+Podemos definir tareas como iteraciones de un bucle con intención de paralelizar el codigo.
+*** Bucles for
+Existe una clausula de omp que se encarga de vcrear tareas en los bucles for de forma automática. Esta seria la siguiente:
+
+#+begin_src c
+
+#pragma omp paralel
+#pragma omp single
+#pragma omp for schedule(static, BS)
+for (int i=0; i< n; i++) C[i] = A[i] + B[i];
+
+#+end_src
+
+La clausula schedule tiene dos parametros el primero es el modo y el segundo es el chunk. A partir de el chunk podemos ajustar la granularidad.
+*** Crear tareas explicitamente dentro del bucle
+Podemos crear estas tareas dentro de el mismo bucle como en el ejemplo:
+#+begin_src c
+#pragma omp paralel
+#pragma omp single
+for (int i=0; i< n; i++) {
+    #pragma omp task
+    doSomething();
+}
+#+end_src
+Podriamos tambien usar un bucle while sin ningun tipo de iterador(bucle incontables).
+*** Clausula taskloop
+De igual forma que en los bucles for podemos añadir esta clausula para que OMP genere tareas con las iteraciones de este. Este puede ser acompañado de la clausula grainsize con la cual podremos ajustar la granularidad de este. Reduction suele usarse con este tipo de estrategia.
+#+begin_src c
+#pragma omp paralel
+#pragma omp single
+#pragma omp taskloop grainsize(BS) reduction(+:sum) private(n)
+for (int i=0; i< n; i++) {
+    sum++;
+}
+#+end_src
+De igual forma que con grainsize tambien podriamos usar num_task. Este se le indicara cuantas tareas deberán crearse.
+** Tareas recursivas
+Tambien podemos paralelizar una funcion recursiva
+*** Estrategias
+**** Leaf
+Todas las immersiones recursivas las hace un procesador. Se paraleliza al llegar al caso base.
+#+begin_src c
+void rec() {
+    if(baseCase){
+       #pragma omp task
+       ...
+    }
+    else rec();
+}
+#+end_src
+**** Tree
+Son las immersiones recursivas las que se paralelizan.
+#+begin_src c
+void rec() {
+    if(baseCase) {
+        ...
+    }
+    else {
+        #pragma omp task
+        rec()
+    }
+}
+#+end_src
+***** Granularidad (cut-off)
+A veces nos interesa hacer algunos cambios con tal de regular la granularidad. Para esto esta la clausula final donde le entra como parametro una condición que se tiene que cumplir cuando estemos al final (no más paralelización a partir de aquí). Luego OMP ofrece una función omp_in_final() que nos devuelve true si estamos en una region final. Notese que final no evita que se generen mas tareas.
+****** Deph
+A partir de cierto nivel de profundidad pararemos de generar tareas.
+
+#+begin_src c
+#define MIN_SIZE 64
+#define CUTOFF 3
+...
+int rec_dot_product(int *A, int *B, int n, int depth) {
+    int tmp1, tmp2 = 0;
+    if (n>MIN_SIZE){
+        int n2 = n / 2;
+        if (!omp_in_final()){
+            #pragma omp task shared(tmp1) final (depth >= CUTOFF) //aqui usamos shared para que el subproceso pueda comunicarle el resultado a temp
+            tmp1 = rec_dot_product(A, B, n2, depth+1);
+            #pragma omp task shared(tmp2) final(depth >= CUTOFF)
+            tmp2 = rec_dot_product(A+n2, B+n2, n-n2, depth+1);
+            #pragma omp taskwait //tenemos que esperar a que acaben las tareas para asegurar-nos que tmp1 y tmp2 tienen valores correctos
+        }
+        else
+        {
+            tmp1 = rec_dot_product(A, B, n2, depth+1);
+            tmp2 = rec_dot_product(A+n2, B+n2, n-n2, depth+1);
+        }
+    }
+    else tmp1 = dot_product(A, B, n);return(tmp1+tmp2);
+}
+#+end_src
+
+****** Tamaño de los objetos
+Podemos usar cut-off pero en vez de mirar la profundidad mirar quan grande es la estructura en cada inmersión. Y al llegar a ese limite, no generar más tareas. Un ejemplo seria:
+#+begin_src c
+#define MIN_SIZE 64
+#define CUTOFF 256
+...
+int rec_dot_product(int *A, int *B, int n, int depth) {
+    int tmp1, tmp2 = 0;
+    if (n>MIN_SIZE){
+        int n2 = n / 2;
+        if (!omp_in_final()){
+            #pragma omp task shared(tmp1) final (n2 >= CUTOFF)
+            tmp1 = rec_dot_product(A, B, n2, depth+1);
+            #pragma omp task shared(tmp2) final(n2 >= CUTOFF)
+            tmp2 = rec_dot_product(A+n2, B+n2, n-n2, depth+1);
+            #pragma omp taskwait
+        }
+        else
+        {
+            tmp1 = rec_dot_product(A, B, n2, depth+1);
+            tmp2 = rec_dot_product(A+n2, B+n2, n-n2, depth+1);
+        }
+    }
+    else tmp1 = dot_product(A, B, n);return(tmp1+tmp2);
+}
+#+end_src
+
+
+* Descomposición por datos (implicita)
+En este caso, somos nosotros los que indicamos que zonas va a tratar cada tarea. Por lo tanto no crearemos tareas como tal sino que haremos que todas la ejecuciones recursivas ejecuten lo mismo.
+Esto nos ayudará a poder gestionar mejor los overheats de transferencia de datos ya que vamos a intentar trabajar siempre con lineas de cache enteras.
+** Descomposición geométrica de datos
+Esta técnica se basa en dividir nuestra estructura en partes iguales aprovechando los iteradores de forma natural. Por ejemplo: Asignar en una matriz a los procesadores por filas de esta.
+Esta puede ser:
+*** Cíclica
+Cada procesador se le assignara las filas de forma modular.
+#+begin_src c
+int mat [N][N];
+#pragma omp paralel
+{
+    int id = omp_get_thread_num();
+    int howMany = omp_get_num_thread();
+    for(int i = id; i<N; i += howMany){
+        for(int j=0; j<N; ++j){
+            foo(mat[i][j]);
+        }
+    }
+}
+#+end_src
+Este tiene una ventaja sobre el siguiente ya garantiza que las tareas salgan más balanceadas.
+*** Bloques
+Dividimos toda nuestra estructura en partes iguales (o lo intentamos), i cada una de estas partes va a se ejecutada por una hebra.
+#+begin_src c
+int mat [N][N];
+#pragma omp paralel
+{
+    int id = omp_get_thread_num();
+    int howMany = omp_get_num_thread();
+    int BS = N/howMany;
+    int startI = id*BS;
+    int endI = startI+BS;
+    for(int i = startI; i<min(endI, N); i += howMany){
+        for(int j=0; j<N; ++j){
+            foo(mat[i][j]);
+        }
+    }
+}
+#+end_src
+Como podemos ver aqui hay un problema de balenceo ya que la ultima hebra va a hacer menos trabajo que las demas.
+Una manera de solucionar esto seria añadir las tareas sobrantes de forma equitativa.
+#+begin_src c
+int mat [N][N];
+#pragma omp paralel
+{
+    int id = omp_get_thread_num();
+    int howMany = omp_get_num_thread();
+    int BS = N/howMany;
+    int res = N%howMany;
+    int startI = id*BS;
+    int endI = startI+BS;
+    if (res != 0) {
+        startI += id;
+        endI += (id+1);
+    }
+    else {
+        startI += res;
+        endI += res;
+    }
+    for(int i = startI; i<min(endI, N); i += howMany){
+        for(int j=0; j<N; ++j){
+            foo(mat[i][j]);
+        }
+    }
+}
+#+end_src
+
+*** Por lineas de cache (aka Columnas)
+Podemos también asignar algunas columnas consecutivas de una matriz como la parte que va a ser ejecutado por cada hebra. Si ajustamos bien cuantas columnas ejecuta cada hebra a algun multiplo de la medida de la cache podemos llegar a explotar la localidad espacial de la matriz.
+
+#+begin_src c
+#define CACHE_SIZE 8
+int mat [N][N];
+#pragma omp paralel
+{
+    int id = omp_get_thread_num();
+    int howMany = omp_get_num_thread();
+    for(int i = 0; i<N; i += howMany){
+        for(int jj=id*CACHE_SIZE; jj<N; jj += howMany*CACHE_SIZE){
+            for(int j = jj; j<jj+CACHE_SIZE; ++j){
+                foo(mat[i][j]);
+            }
+        }
+    }
+}
+#+end_src
+** ¿Que es el false sharing?
+El false sharing ocurre cuando, en datos compartidos, usamos algun elemento que pertenece a una linea de cache que ya esta siendo usada por otra hebra. Esto hara que linea de chache se invalide, por lo tanto generara mucho overheat.
+Para solucionar-lo necesitaremos usar lo que se conece como Padding. Esto es un espacio extra que le añadimos a la estructura para asegurarnos que estos ocupen un multiplo de lineas de cache exacto y nunguna otra hebra necesite acceder a esa linea cuando la ejecute.
+* Sincronización a nivel de HW
+El propio hardware nos ofrece algunos metodos atomicos para sincronizar hebras (evitar data races). Todos estos se basan en el mecanismo base-lock (omp_lock). Ya que hasta la clausula critical de omp usa este mecanismo.
+** Problemas a tratar
+Uno podria pensar que podemos hacer esto con load-test-store (instruciones ensablador). El problema es que estas no son atomicas ya que permiten que varios procesadores las ejecuten en una misma región de memoria haciendo posible la aparicion de data races.
+
+| P1                           | P2                           |
+|------------------------------+------------------------------|
+| set_lock: ld r1, lock_flag   | set_lock: ld r1, lock_flag   |
+| bnez r1, set_lock            | bnez r1, set_lock            |
+| st lock_flag, #1             | st lock_flag, #1             |
+|                              |                              |
+| unset_lock: st lock_flag, #0 | unset_lock: st lock_flag, #0 |
+
+El valor de r1 al principio sera el mismo para los dos en el load. Los dos cumpliran la condicion para poder seguir.
+** ¿Que hacemos?
+Como hemos visto antes necesitamos operaciones atomicas a nivel de procesador.
+*** Test and set
+Esta instrucion (t&s) lee el valor de la posición de memoria y lo cambia a 1. Asi solamente haremos un acceso memoria.
+| P1                           |
+|------------------------------|
+| set_lock: t&s r1, lock_flag  |
+| bnez r1, set_lock            |
+|                              |
+| unset_lock: st lock_flag, #1 |
+
+Guardamos el valor previo en r1 i miramos si este era 1, en este caso alguien ya lo ha bloqueado antes. En caso contrario seguimos ya que lo hemos bloqueado nosotros.
+*** Atomic echange
+Intercambiamos el valor del registro por el de la memoria.
+| P1                           |
+|------------------------------|
+| mv r1, #1                    |
+| set_lock: exch r1, lock_flag |
+| bnez r1, set_lock            |
+|                              |
+| unset_lock: st lock_flag, #1 |
+*** Fetch-and-op
+Realiza una operacion aritmetica basica directamente en la memoria. Estas son (incrementar, decrementar, sumar y restar)
+#+begin_src c
+#pragma omp atomic
+#+end_src
+*** Test test and set
+Al trabajar directamente a la memoria con t&s puede augmentar el tiempo en responder si muchos procesadores intentan acceder a la misma zona, ya que estaremos haciendo escrituras cosa que invalidará las lineas de cache. Para evitar esto podemos hacer una lectura antes de el test&set.
+| P1                           |
+|------------------------------|
+| set_lock: ld r1, lock_flag   |
+| bnez r1,set_lock             |
+| t&s r1, lock_flag            |
+| bnez r1, set_lock            |
+|                              |
+| unset_lock: st lock_flag, #1 |
+*** Load-linked store-conditional
+Load-linked carga el valor de la zona de memoria que apunta a el registro indicado. Y store-conditional hace un cambio si i solo si no se ha hecho ningun cambio desde que se ejecuto load-linked. Store-conditional retorna 0 en caso de fallo y 1 en caso de exito.
+| P1                           |
+|------------------------------|
+| set_lock: ll r1, lock_flag   |
+| bnez r1, set_lock            |
+| sc r1,lock_flag              |
+| beqz r1, set_lock            |
+|                              |
+| unset_lock: st lock_flag, #1 |
